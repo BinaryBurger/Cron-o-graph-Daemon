@@ -1,0 +1,382 @@
+#!/usr/bin/env python
+# -*- coding: UTF-8 -*-
+
+"""
+binaryburger-cronmanager-daemon.py: Daemon to execute tasks managed by the BinaryBurger CronManager
+
+Author: Jens Nistler <loci@binaryburger.com>
+License: GPL
+Version: 1.0
+"""
+
+import argparse, daemon, daemon.pidfile, os, sys, urllib, urllib2, base64, json, logging, subprocess
+from signal import SIGTERM
+from time import sleep
+from datetime import datetime, timedelta
+from threading import Thread
+from math import ceil
+
+class http_request(urllib2.Request):
+	"""Custom HTTP request handler to ease the use of urllib2
+	"""
+
+	# current request method
+	method = "GET"
+
+	def set_method(self, method):
+		"""Set HTTP method for next request
+		"""
+
+		if method not in ("GET", "POST", "PUT", "DELETE", "OPTIONS"):
+			raise urllib2.HTTPError
+
+		self.method = method
+
+	def get_method(self):
+		"""Get HTTP method for next request
+		"""
+
+		return self.method
+
+	def set_auth(self, user, password):
+		"""Set username and password for http basic authentication
+		"""
+
+		self.add_header("Authorization", "Basic %s" % base64.encodestring("%s:%s" % (user, password))[:-1])
+
+	def set_data(self, data):
+		"""Set request data
+		"""
+
+		if data is not None:
+			data = urllib.urlencode(data)
+
+		self.data = data
+
+
+class cronmanager_base:
+	"""Base class for manager and daemon.
+	Verifies API credentials and handles request errors
+	"""
+
+	uri = "http://www.binaryburger.com/cronmanager/api/"
+	server = None
+	secret = None
+
+	def validate_credentials(self, server, secret):
+		"""Validate API credentials
+		"""
+
+		self.set_credentials(server, secret)
+
+		data = self.make_request("validate/credentials")
+		if data is True:
+			return True
+
+		return False
+
+	def set_credentials(self, server, secret):
+		"""Set API credentials
+		"""
+
+		self.server = server
+		self.secret = secret
+
+	def make_request(self, command, method="GET", post_data=None):
+		"""Send API request and handle errors
+		"""
+
+		request = http_request(self.uri + command)
+		request.set_auth(self.server, self.secret)
+		request.set_method(method)
+		request.set_data(post_data)
+
+		try:
+			logging.debug("HTTP " + request.get_method() + " request: " + request.get_full_url())
+			response_handle = urllib2.urlopen(request)
+			response_json = json.loads(response_handle.read())
+			return response_json
+		except IOError, e:
+			error_message = "Failed to get response from server"
+			if hasattr(e, "message") and e.message.strip():
+				error_message += " (" + e.message + ")"
+			if hasattr(e, "code") and e.code != 0:
+				error_message += " (" + str(e.code) + ")"
+			logging.error(error_message)
+			if post_data is not None:
+				logging.error(post_data)
+		except ValueError, e:
+			error_message = "Failed to decode server response"
+			if hasattr(e, "message") and e.message.strip():
+				error_message += " (" + e.message + ")"
+			logging.error(error_message)
+
+		return False
+
+
+class cronmanager_agent(Thread, cronmanager_base):
+	"""Thread to handle task execution
+	"""
+
+	id = None
+	command = None
+	parameter = None
+	max_time = 0
+	date = None
+	process = None
+
+	def __init__(self, id, command, parameter=None, max_time=0):
+		"""Set data for thread execution
+		"""
+
+		Thread.__init__(self)
+		self.id = id
+		self.command = command
+		self.parameter = parameter
+		self.max_time = max_time
+
+	def run(self):
+		if self.send_start() is False:
+			return
+		if self.execute_task() is False:
+			return
+		self.send_stop()
+
+	def send_start(self):
+		"""Call API to report start of execution
+		"""
+
+		logging.debug("Sending start of task execution " + str(self.id))
+
+		data = self.make_request("task/execution/" + str(self.id) + '/start', "PUT")
+		if data is False or not data['id'] or data['id'] != self.id:
+			logging.error("Failed to send start of task execution " + str(self.id))
+			return False
+
+		return True
+
+	def execute_task(self):
+		"""Execute the task in a subprocess
+		"""
+
+		logging.debug("Starting to process task execution " + str(self.id))
+
+		self.date = datetime.utcnow()
+		try:
+			self.process = subprocess.Popen([self.command, self.parameter], stdout=subprocess.PIPE)
+			return True
+		except OSError, e:
+			error_message = "Failed to execute command "" + self.command + "" with parameter "" + self.parameter + """
+			if hasattr(e, "message") and e.message.strip():
+				error_message += " (" + e.message + ")"
+			logging.error(error_message)
+
+		return False
+
+	def send_stop(self):
+		"""Wait for task to finish or kill it if max execution time is reached.
+		Report end of execution to API
+		"""
+
+		logging.debug("Waiting for task execution " + str(self.id))
+
+		duration = 0
+		while True:
+			self.process.poll()
+			duration = (datetime.utcnow() - self.date).total_seconds()
+
+			# we're done
+			if self.process.returncode is not None:
+				break
+
+			# no runtime limit or not yet reached
+			if self.max_time == 0 or duration < self.max_time:
+				sleep(0.1)
+				continue
+
+			# runtime limit reached, kill the task
+			try:
+				self.process.kill()
+				while self.process.returncode is None:
+					self.process.poll()
+					sleep(0.1)
+				logging.debug("Terminated task execution " + str(self.id))
+				break
+			except IOError:
+				logging.error("Failed to terminate task execution " + str(self.id))
+
+		logging.debug("Sending end of task execution " + str(self.id))
+
+		data = self.make_request("task/execution/" + str(self.id) + "/end", "PUT", {
+			"return_code": self.process.returncode,
+			"duration": duration,
+			"output": self.process.stdout.read()
+		})
+
+		if data is False or not data['id'] or data['id'] != self.id:
+			logging.error("Failed to send end of task execution " + str(self.id))
+			return False
+
+		return True
+
+
+class cronmanager_daemon(cronmanager_base):
+	PidFile = None
+	Daemon = None
+	Workers = {}
+
+	def __init__(self):
+		"""Parse command line arguments and start the daemon
+		"""
+
+		parser = argparse.ArgumentParser(
+			description="BinaryBurger CronManager daemon"
+		)
+		parser.add_argument(
+			"--start",
+			dest="Start",
+			action="store_true",
+			required=False,
+		)
+		parser.add_argument(
+			"--stop",
+			dest="Stop",
+			action="store_true",
+			required=False,
+		)
+		parser.add_argument(
+			"--verbose",
+			dest="Verbose",
+			action="store_true",
+			required=False,
+		)
+		parser.add_argument(
+			"--server",
+			dest="Server",
+			help="The server name as shown on the CronManager web interface",
+			required=True
+		)
+		parser.add_argument(
+			"--secret",
+			dest="Secret",
+			help="The server secret as shown on the CronManager web interface",
+			required=True
+		)
+		parser.add_argument(
+			"--pid",
+			dest="PidFile",
+			help="The location for the CronManager daemon pidfile",
+			required=False,
+			default="./cronmanager.pid"
+		)
+		args = parser.parse_args()
+
+		# set log verbosity
+		if args.Verbose is True:
+			log_level = logging.DEBUG
+		else:
+			log_level = logging.ERROR
+		logging.basicConfig(
+			level=log_level,
+			format = "%(asctime)s [%(levelname)-8s] (" + args.Server + ") %(message)s",
+			datefmt = "%Y-%m-%d %H:%M:%S"
+		)
+
+		self.PidFile = args.PidFile
+
+		if args.Start is True and args.Stop is True:
+			logging.critical("You cannot start and stop the daemon at the same time")
+			return
+
+		# validate credentials
+		if self.validate_credentials(args.Server, args.Secret) is not True:
+			logging.critical("Invalid credentials")
+			return
+
+		if args.Start is True:
+			self.start_daemon()
+			return
+
+		if args.Stop is True:
+			self.stop_daemon()
+			return
+
+		logging.critical("Shall I --start or --stop the daemon?")
+
+	def start_daemon(self):
+		"""Handle daemon startup and daemonization
+		"""
+
+		logging.info("Starting cronmanager daemon...")
+
+		if os.path.exists(self.PidFile):
+			print "Daemon already running, pid file " + self.PidFile + " exists"
+			return
+
+		pid = daemon.pidfile.TimeoutPIDLockFile(
+			self.PidFile,
+			10
+		)
+
+		self.Daemon = daemon.DaemonContext(
+			uid=os.getuid(),
+			gid=os.getgid(),
+			pidfile=pid,
+			working_directory=os.getcwd(),
+			detach_process=True,
+			signal_map={
+				SIGTERM: self.terminate,
+			}
+		)
+
+		with self.Daemon:
+			logging.debug("Daemonizing...")
+			self.loop()
+
+	def stop_daemon(self):
+		if not os.path.exists(self.PidFile):
+			logging.critical("Daemon not running or invalid pidfile")
+			return
+
+		pid = open(self.PidFile).read()
+		logging.info("Stopping cronmanager daemon...")
+		os.kill(int(pid), SIGTERM)
+
+	def loop(self):
+		while True:
+			task_list = self.make_request("ping")
+			if task_list is False:
+				logging.error("Failed to get tasks from server")
+			elif not len(task_list):
+				logging.error("No tasks to process")
+			else:
+				for task in task_list:
+					agent = cronmanager_agent(task["id"], task["command"], task["parameter"], task["max_time"])
+					agent.set_credentials(self.server, self.secret)
+					agent.start()
+
+			# wait until next full minute
+			sleep_period = self.get_sleep_period()
+			logging.debug("Going to sleep for " + str(sleep_period) + " seconds")
+			sleep(int(sleep_period))
+
+	def get_sleep_period(self):
+		"""Calculate time until the next full minute
+		"""
+
+		sleep_until = datetime.utcnow() + timedelta(minutes=1)
+		sleep_until = sleep_until.replace(second=0)
+		sleep_period = (sleep_until - datetime.utcnow()).total_seconds()
+		return ceil(sleep_period)
+
+	def terminate(self, signal, action):
+		"""Signal handler for daemon shutdown
+		"""
+
+		self.Daemon.close()
+		sys.exit(0)
+
+
+# start me up!
+if __name__ == "__main__":
+	daemon = cronmanager_daemon()
