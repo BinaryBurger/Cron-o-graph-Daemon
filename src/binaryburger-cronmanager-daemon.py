@@ -9,7 +9,7 @@ License: GPL
 Version: 1.0
 """
 
-import argparse, daemon, daemon.pidfile, os, sys, urllib, urllib2, base64, json, logging, subprocess
+import argparse, daemon, daemon.pidfile, os, sys, urllib, urllib2, base64, json, logging, subprocess, shlex
 from signal import SIGTERM
 from time import sleep
 from datetime import datetime, timedelta
@@ -120,20 +120,18 @@ class cronmanager_agent(Thread, cronmanager_base):
 
 	id = None
 	command = None
-	parameter = None
 	max_time = 0
 	date = None
 	process = None
 
-	def __init__(self, id, command, parameter=None, max_time=0):
+	def __init__(self, id, command, max_time=0):
 		"""Set data for thread execution
 		"""
 
 		Thread.__init__(self)
 		self.id = id
-		self.command = command
-		self.parameter = parameter
-		self.max_time = max_time
+		self.command = str(command)
+		self.max_time = int(max_time)
 
 	def run(self):
 		if self.send_start() is False:
@@ -163,10 +161,10 @@ class cronmanager_agent(Thread, cronmanager_base):
 
 		self.date = datetime.utcnow()
 		try:
-			self.process = subprocess.Popen([self.command, self.parameter], stdout=subprocess.PIPE)
+			self.process = subprocess.Popen(shlex.split(self.command), stdout=subprocess.PIPE)
 			return True
 		except OSError, e:
-			error_message = "Failed to execute command "" + self.command + "" with parameter "" + self.parameter + """
+			error_message = "Failed to execute command "" + self.command + """
 			if hasattr(e, "message") and e.message.strip():
 				error_message += " (" + e.message + ")"
 			logging.error(error_message)
@@ -351,7 +349,7 @@ class cronmanager_daemon(cronmanager_base):
 				logging.error("No tasks to process")
 			else:
 				for task in task_list:
-					agent = cronmanager_agent(task["id"], task["command"], task["parameter"], task["max_time"])
+					agent = cronmanager_agent(task["id"], task["command"], task["max_time"])
 					agent.set_credentials(self.server, self.secret)
 					agent.start()
 
