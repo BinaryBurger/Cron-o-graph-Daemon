@@ -98,8 +98,6 @@ class cronmanager_base:
 			return response_json
 		except IOError, e:
 			error_message = "Failed to get response from server"
-			if hasattr(e, "message") and e.message.strip():
-				error_message += " (" + e.message + ")"
 			if hasattr(e, "code") and e.code != 0:
 				error_message += " (" + str(e.code) + ")"
 			logging.error(error_message)
