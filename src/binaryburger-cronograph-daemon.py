@@ -185,7 +185,8 @@ class cronograph_agent(Thread, cronograph_base):
 		duration = 0
 		while True:
 			self.process.poll()
-			duration = (datetime.utcnow() - self.date).total_seconds()
+			durationDelta = (datetime.utcnow() - self.date)
+			duration = (durationDelta.days * 24 * 60 * 60) + durationDelta.seconds
 
 			# we're done
 			if self.process.returncode is not None:
