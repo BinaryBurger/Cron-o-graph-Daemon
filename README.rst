@@ -1,2 +1,2 @@
-BinaryBurger CronManager daemon
+BinaryBurger Cron-o-graph daemon
 ================================
