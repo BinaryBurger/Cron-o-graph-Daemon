@@ -186,11 +186,11 @@ class cronograph_agent(Thread, cronograph_base):
 		while True:
 			self.process.poll()
 			durationDelta = (datetime.utcnow() - self.date)
-			duration = (durationDelta.days * 24 * 60 * 60) + durationDelta.seconds
-			duration = float(duration) + (durationDelta.microseconds / 1000000)
+			duration = float(durationDelta.days * 24 * 60 * 60) + float(durationDelta.seconds) + (durationDelta.microseconds / 1000000)
 
 			# we're done
 			if self.process.returncode is not None:
+				logging.debug("Finished task execution " + str(self.id) + " in " + str(duration) + " seconds")
 				break
 
 			# no runtime limit or not yet reached
