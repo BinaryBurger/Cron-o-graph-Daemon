@@ -54,12 +54,12 @@ class http_request(urllib2.Request):
 		self.data = data
 
 
-class cronmanager_base:
+class cronograph_base:
 	"""Base class for manager and daemon.
 	Verifies API credentials and handles request errors
 	"""
 
-	uri = "http://www.binaryburger.com/cronmanager/api/"
+	uri = "http://www.binaryburger.com/cronograph/api/"
 	server = None
 	secret = None
 
@@ -112,7 +112,7 @@ class cronmanager_base:
 		return False
 
 
-class cronmanager_agent(Thread, cronmanager_base):
+class cronograph_agent(Thread, cronograph_base):
 	"""Thread to handle task execution
 	"""
 
@@ -216,7 +216,7 @@ class cronmanager_agent(Thread, cronmanager_base):
 		return True
 
 
-class cronmanager_daemon(cronmanager_base):
+class cronograph_daemon(cronograph_base):
 	PidFile = None
 	Daemon = None
 	Workers = {}
@@ -226,7 +226,7 @@ class cronmanager_daemon(cronmanager_base):
 		"""
 
 		parser = argparse.ArgumentParser(
-			description="BinaryBurger CronManager daemon"
+			description="BinaryBurger Cron-o-graph daemon"
 		)
 		parser.add_argument(
 			"--start",
@@ -249,21 +249,21 @@ class cronmanager_daemon(cronmanager_base):
 		parser.add_argument(
 			"--server",
 			dest="Server",
-			help="The server name as shown on the CronManager web interface",
+			help="The server name as shown on the Cron-o-graph web interface",
 			required=True
 		)
 		parser.add_argument(
 			"--secret",
 			dest="Secret",
-			help="The server secret as shown on the CronManager web interface",
+			help="The server secret as shown on the Cron-o-graph web interface",
 			required=True
 		)
 		parser.add_argument(
 			"--pid",
 			dest="PidFile",
-			help="The location for the CronManager daemon pidfile",
+			help="The location for the Cron-o-graph daemon pidfile",
 			required=False,
-			default="./cronmanager.pid"
+			default="./cronograph.pid"
 		)
 		args = parser.parse_args()
 
@@ -303,7 +303,7 @@ class cronmanager_daemon(cronmanager_base):
 		"""Handle daemon startup and daemonization
 		"""
 
-		logging.info("Starting cronmanager daemon...")
+		logging.info("Starting Cron-o-graph daemon...")
 
 		if os.path.exists(self.PidFile):
 			print "Daemon already running, pid file " + self.PidFile + " exists"
@@ -335,7 +335,7 @@ class cronmanager_daemon(cronmanager_base):
 			return
 
 		pid = open(self.PidFile).read()
-		logging.info("Stopping cronmanager daemon...")
+		logging.info("Stopping Cron-o-graph daemon...")
 		os.kill(int(pid), SIGTERM)
 
 	def loop(self):
@@ -347,7 +347,7 @@ class cronmanager_daemon(cronmanager_base):
 				logging.error("No tasks to process")
 			else:
 				for task in task_list:
-					agent = cronmanager_agent(task["id"], task["command"], task["max_time"])
+					agent = cronograph_agent(task["id"], task["command"], task["max_time"])
 					agent.set_credentials(self.server, self.secret)
 					agent.start()
 
@@ -375,4 +375,4 @@ class cronmanager_daemon(cronmanager_base):
 
 # start me up!
 if __name__ == "__main__":
-	daemon = cronmanager_daemon()
+	daemon = cronograph_daemon()
