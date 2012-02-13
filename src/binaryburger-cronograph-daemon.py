@@ -63,6 +63,9 @@ class cronograph_base:
 	server = None
 	secret = None
 
+	def set_api_uri(self, uri):
+		self.uri = uri
+
 	def validate_credentials(self, server, secret):
 		"""Validate API credentials
 		"""
@@ -86,6 +89,7 @@ class cronograph_base:
 		"""Send API request and handle errors
 		"""
 
+		logging.debug('Using API on ' + self.uri)
 		request = http_request(self.uri + command)
 		request.set_auth(self.server, self.secret)
 		request.set_method(method)
@@ -118,16 +122,18 @@ class cronograph_agent(Thread, cronograph_base):
 
 	id = None
 	command = None
+	shell = None
 	max_time = 0
 	date = None
 	process = None
 
-	def __init__(self, id, command, max_time=0):
+	def __init__(self, id, shell, command, max_time=0):
 		"""Set data for thread execution
 		"""
 
 		Thread.__init__(self)
 		self.id = id
+		self.shell = shell
 		self.command = str(command)
 		self.max_time = int(max_time)
 
@@ -159,12 +165,12 @@ class cronograph_agent(Thread, cronograph_base):
 
 		self.date = datetime.utcnow()
 		try:
-			self.process = subprocess.Popen(shlex.split(self.command), stdout=subprocess.PIPE)
+			self.process = subprocess.Popen(shlex.split(self.command), executable=self.shell, stdout=subprocess.PIPE, shell=True)
 			return True
 		except OSError, e:
-			error_message = "Failed to execute command "" + self.command + """
-			if hasattr(e, "message") and e.message.strip():
-				error_message += " (" + e.message + ")"
+			error_message = "Failed to execute command '" + self.command + "'"
+			if hasattr(e, "strerror") and isinstance(e.strerror, str):
+				error_message += " (" + e.strerror + ")"
 			logging.error(error_message)
 
 		return False
@@ -265,6 +271,13 @@ class cronograph_daemon(cronograph_base):
 			required=False,
 			default="./cronograph.pid"
 		)
+		parser.add_argument(
+			"--api",
+			dest="API",
+			help="Set different API URI",
+			required=False,
+			default="http://www.binaryburger.com/cronograph/api/"
+		)
 		args = parser.parse_args()
 
 		# set log verbosity
@@ -277,6 +290,9 @@ class cronograph_daemon(cronograph_base):
 			format = "%(asctime)s [%(levelname)-8s] (" + args.Server + ") %(message)s",
 			datefmt = "%Y-%m-%d %H:%M:%S"
 		)
+
+		if args.API:
+			self.set_api_uri(args.API)
 
 		self.PidFile = args.PidFile
 
@@ -347,8 +363,9 @@ class cronograph_daemon(cronograph_base):
 				logging.error("No tasks to process")
 			else:
 				for task in task_list:
-					agent = cronograph_agent(task["id"], task["command"], task["max_time"])
+					agent = cronograph_agent(task["id"], task["shell"], task["command"], task["max_time"])
 					agent.set_credentials(self.server, self.secret)
+					agent.set_api_uri(self.uri)
 					agent.start()
 
 			# wait until next full minute
@@ -360,10 +377,11 @@ class cronograph_daemon(cronograph_base):
 		"""Calculate time until the next full minute
 		"""
 
-		sleep_until = datetime.utcnow() + timedelta(minutes=1)
+		utc_now = datetime.utcnow()
+		sleep_until = utc_now + timedelta(minutes=1)
 		sleep_until = sleep_until.replace(second=0)
-		sleep_period = (sleep_until - datetime.utcnow()).seconds
-		return ceil(sleep_period)
+		sleep_period = (sleep_until - utc_now).seconds
+		return sleep_period
 
 	def terminate(self, signal, action):
 		"""Signal handler for daemon shutdown
