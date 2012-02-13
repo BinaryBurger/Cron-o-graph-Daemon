@@ -187,6 +187,7 @@ class cronograph_agent(Thread, cronograph_base):
 			self.process.poll()
 			durationDelta = (datetime.utcnow() - self.date)
 			duration = (durationDelta.days * 24 * 60 * 60) + durationDelta.seconds
+			duration = float(duration) + (durationDelta.microseconds / 1000000)
 
 			# we're done
 			if self.process.returncode is not None:
