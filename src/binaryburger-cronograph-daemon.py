@@ -362,7 +362,7 @@ class cronograph_daemon(cronograph_base):
 
 		sleep_until = datetime.utcnow() + timedelta(minutes=1)
 		sleep_until = sleep_until.replace(second=0)
-		sleep_period = (sleep_until - datetime.utcnow()).total_seconds()
+		sleep_period = (sleep_until - datetime.utcnow()).seconds
 		return ceil(sleep_period)
 
 	def terminate(self, signal, action):
