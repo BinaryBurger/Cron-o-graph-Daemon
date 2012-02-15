@@ -14,7 +14,7 @@ from signal import SIGTERM
 from time import sleep
 from datetime import datetime, timedelta
 from threading import Thread
-from math import ceil
+from pwd import getpwnam
 
 class http_request(urllib2.Request):
 	"""Custom HTTP request handler to ease the use of urllib2
@@ -121,13 +121,14 @@ class cronograph_agent(Thread, cronograph_base):
 	"""
 
 	id = None
+	user = None
 	command = None
 	shell = None
 	max_time = 0
 	date = None
 	process = None
 
-	def __init__(self, id, shell, command, max_time=0):
+	def __init__(self, id, user, shell, command, max_time=0):
 		"""Set data for thread execution
 		"""
 
@@ -136,6 +137,7 @@ class cronograph_agent(Thread, cronograph_base):
 		self.shell = shell
 		self.command = str(command)
 		self.max_time = int(max_time)
+		self.user = str(user)
 
 	def run(self):
 		if self.send_start() is False:
@@ -165,7 +167,18 @@ class cronograph_agent(Thread, cronograph_base):
 
 		self.date = datetime.utcnow()
 		try:
-			self.process = subprocess.Popen(shlex.split(self.command), executable=self.shell, stdout=subprocess.PIPE, shell=True)
+			userdata = getpwnam(self.user)
+			def result():
+				os.setgid(userdata.pw_uid)
+				logging.debug("Executing task as " + self.user + " with uid " + str(userdata.pw_uid))
+
+			self.process = subprocess.Popen(
+				shlex.split(self.command),
+				executable=self.shell,
+				stdout=subprocess.PIPE,
+				shell=True,
+				preexec_fn=result
+			)
 			return True
 		except OSError, e:
 			error_message = "Failed to execute command '" + self.command + "'"
@@ -365,7 +378,7 @@ class cronograph_daemon(cronograph_base):
 				logging.error("No tasks to process")
 			else:
 				for task in task_list:
-					agent = cronograph_agent(task["id"], task["shell"], task["command"], task["max_time"])
+					agent = cronograph_agent(task["id"], task["user"], task["shell"], task["command"], task["max_time"])
 					agent.set_credentials(self.server, self.secret)
 					agent.set_api_uri(self.uri)
 					agent.start()
