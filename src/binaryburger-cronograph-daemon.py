@@ -15,6 +15,7 @@ from time import sleep
 from datetime import datetime, timedelta
 from threading import Thread
 from pwd import getpwnam
+from random import randint
 
 class http_request(urllib2.Request):
 	"""Custom HTTP request handler to ease the use of urllib2
@@ -238,6 +239,7 @@ class cronograph_agent(Thread, cronograph_base):
 
 
 class cronograph_daemon(cronograph_base):
+	offset_seconds = 0
 	PidFile = None
 	Daemon = None
 	Workers = {}
@@ -294,6 +296,8 @@ class cronograph_daemon(cronograph_base):
 			default="http://www.binaryburger.com/cronograph/api/"
 		)
 		args = parser.parse_args()
+
+		self.offset_seconds = randint(0, 59)
 
 		# set log verbosity
 		if args.Verbose is True:
@@ -394,7 +398,7 @@ class cronograph_daemon(cronograph_base):
 
 		utc_now = datetime.utcnow()
 		sleep_until = utc_now + timedelta(minutes=1)
-		sleep_until = sleep_until.replace(second=0)
+		sleep_until = sleep_until.replace(second=self.offset_seconds)
 		sleep_period = (sleep_until - utc_now).seconds
 		return sleep_period
 
