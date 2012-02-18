@@ -64,9 +64,6 @@ class cronograph_base:
 	server = None
 	secret = None
 
-	def set_api_uri(self, uri):
-		self.uri = uri
-
 	def validate_credentials(self, server, secret):
 		"""Validate API credentials
 		"""
@@ -90,7 +87,6 @@ class cronograph_base:
 		"""Send API request and handle errors
 		"""
 
-		logging.debug('Using API on ' + self.uri)
 		request = http_request(self.uri + command)
 		request.set_auth(self.server, self.secret)
 		request.set_method(method)
@@ -139,6 +135,9 @@ class cronograph_agent(Thread, cronograph_base):
 		self.command = str(command)
 		self.max_time = int(max_time)
 		self.user = str(user)
+
+	def set_api_uri(self, uri):
+		self.uri = uri
 
 	def run(self):
 		if self.send_start() is False:
@@ -284,9 +283,16 @@ class cronograph_daemon(cronograph_base):
 		parser.add_argument(
 			"--pid",
 			dest="PidFile",
-			help="The location for the Cron-o-graph daemon pidfile",
+			help="The location for the Cron-o-graph pidfile",
 			required=False,
 			default="./cronograph.pid"
+		)
+		parser.add_argument(
+			"--log",
+			dest="LogFile",
+			help="The location for the Cron-o-graph logfile",
+			required=False,
+			default="/var/log/cronograph.log"
 		)
 		parser.add_argument(
 			"--api",
@@ -297,7 +303,13 @@ class cronograph_daemon(cronograph_base):
 		)
 		args = parser.parse_args()
 
-		self.offset_seconds = randint(0, 59)
+		# check if logfile is writable
+		fileExistsNotWriteable = os.path.exists(args.LogFile) and not os.access(args.LogFile, os.W_OK)
+		fileNotExistsPathNotWriteable = not os.path.exists(args.LogFile) and not os.access(os.path.dirname(args.LogFile), os.W_OK)
+
+		if fileExistsNotWriteable or fileNotExistsPathNotWriteable:
+			print "Logfile is not writeable: " + args.LogFile
+			return
 
 		# set log verbosity
 		if args.Verbose is True:
@@ -307,11 +319,18 @@ class cronograph_daemon(cronograph_base):
 		logging.basicConfig(
 			level=log_level,
 			format = "%(asctime)s [%(levelname)-8s] (" + args.Server + ") %(message)s",
-			datefmt = "%Y-%m-%d %H:%M:%S"
+			datefmt = "%Y-%m-%d %H:%M:%S",
+			filename = args.LogFile
 		)
 
+		# set offset
+		self.offset_seconds = randint(0, 59)
+		logging.debug("Call offset set to " + str(self.offset_seconds) + " seconds")
+
+		# use another api - just for development
 		if args.API:
-			self.set_api_uri(args.API)
+			self.uri = args.API
+			logging.debug('Switched API to ' + self.uri)
 
 		self.PidFile = args.PidFile
 
