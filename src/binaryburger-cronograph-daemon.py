@@ -2,7 +2,7 @@
 # -*- coding: UTF-8 -*-
 
 """
-binaryburger-cronmanager-daemon.py: Daemon to execute tasks managed by the BinaryBurger CronManager
+binaryburger-cronograph-daemon.py: Daemon to execute tasks managed by the BinaryBurger Cron-o-graph
 
 Author: Jens Nistler <loci@binaryburger.com>
 License: GPL
