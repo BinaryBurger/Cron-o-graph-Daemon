@@ -9,7 +9,7 @@ License: GPL
 Version: 1.0
 """
 
-import argparse, daemon, daemon.pidfile, os, sys, urllib, urllib2, base64, json, logging, subprocess, shlex
+import argparse, daemon, daemon.pidfile, os, sys, urllib, urllib2, base64, json, logging, subprocess
 from signal import SIGTERM
 from time import sleep
 from datetime import datetime, timedelta
@@ -63,6 +63,7 @@ class cronograph_base:
 	uri = "http://www.binaryburger.com/cronograph/api/"
 	server = None
 	secret = None
+	logger = None
 
 	def validate_credentials(self, server, secret):
 		"""Validate API credentials
@@ -119,11 +120,9 @@ class cronograph_agent(Thread, cronograph_base):
 
 	id = None
 	user = None
-	command = None
 	shell = None
+	command = None
 	max_time = 0
-	date = None
-	process = None
 
 	def __init__(self, id, user, shell, command, max_time=0):
 		"""Set data for thread execution
@@ -131,110 +130,82 @@ class cronograph_agent(Thread, cronograph_base):
 
 		Thread.__init__(self)
 		self.id = id
+		self.user = str(user)
 		self.shell = shell
 		self.command = str(command)
 		self.max_time = int(max_time)
-		self.user = str(user)
 
 	def set_api_uri(self, uri):
 		self.uri = uri
 
+	def set_logger(self, logger):
+		self.logger = logger
+
 	def run(self):
-		if self.send_start() is False:
-			return
-		if self.execute_task() is False:
-			return
-		self.send_stop()
-
-	def send_start(self):
-		"""Call API to report start of execution
-		"""
-
-		logging.debug("Sending start of task execution " + str(self.id))
+		self.logger.debug("Sending start of task execution " + str(self.id))
 
 		data = self.make_request("task/execution/" + str(self.id) + '/start', "PUT")
 		if data is False or not data['id'] or data['id'] != self.id:
-			logging.error("Failed to send start of task execution " + str(self.id))
-			return False
+			self.logger.error("Failed to send start of task execution " + str(self.id))
+			return
 
-		return True
-
-	def execute_task(self):
-		"""Execute the task in a subprocess
-		"""
-
-		logging.debug("Starting to process task execution " + str(self.id))
-
-		self.date = datetime.utcnow()
+		executionStart = datetime.utcnow()
 		try:
 			userdata = getpwnam(self.user)
+			self.logger.debug("Executing task as " + self.user + " with uid " + str(userdata.pw_uid))
+
 			def result():
 				os.setgid(userdata.pw_uid)
-				logging.debug("Executing task as " + self.user + " with uid " + str(userdata.pw_uid))
 
-			self.process = subprocess.Popen(
-				shlex.split(self.command),
+			process = subprocess.Popen(
+				self.command,
 				executable=self.shell,
-				stdout=subprocess.PIPE,
 				shell=True,
+				stdout=subprocess.PIPE,
+				stderr=subprocess.PIPE,
 				preexec_fn=result
 			)
-			return True
 		except OSError, e:
 			error_message = "Failed to execute command '" + self.command + "'"
 			if hasattr(e, "strerror") and isinstance(e.strerror, str):
 				error_message += " (" + e.strerror + ")"
-			logging.error(error_message)
+			self.logger.error(error_message)
+			return
 
-		return False
-
-	def send_stop(self):
-		"""Wait for task to finish or kill it if max execution time is reached.
-		Report end of execution to API
-		"""
-
-		logging.debug("Waiting for task execution " + str(self.id))
-
-		duration = 0
-		while True:
-			self.process.poll()
-			durationDelta = (datetime.utcnow() - self.date)
-			duration = float(durationDelta.days * 24 * 60 * 60) + float(durationDelta.seconds) + (float(durationDelta.microseconds) / 1000000)
-
-			# we're done
-			if self.process.returncode is not None:
-				logging.debug("Finished task execution " + str(self.id) + " in " + str(duration) + " seconds")
-				break
+		self.logger.debug("Waiting for task execution " + str(self.id))
+		while process.poll() is None:
+			# calculate time spent
+			durationDelta = datetime.utcnow() - executionStart
+			duration = float(int(durationDelta.days) * 24 * 60 * 60) + float(durationDelta.seconds) + (float(durationDelta.microseconds) / 1000000)
 
 			# no runtime limit or not yet reached
 			if self.max_time == 0 or duration < self.max_time:
 				sleep(0.1)
-				continue
-
 			# runtime limit reached, kill the task
-			try:
-				self.process.kill()
-				while self.process.returncode is None:
-					self.process.poll()
-					sleep(0.1)
-				logging.debug("Terminated task execution " + str(self.id))
-				break
-			except IOError:
-				logging.error("Failed to terminate task execution " + str(self.id))
+			else:
+				try:
+					process.kill()
+					process.wait()
+					self.logger.debug("Terminated task execution " + str(self.id))
+					break
+				except IOError:
+					self.logger.error("Failed to terminate task execution " + str(self.id))
 
-		logging.debug("Sending end of task execution " + str(self.id))
+		# calculate time spent
+		durationDelta = datetime.utcnow() - executionStart
+		duration = float(int(durationDelta.days) * 24 * 60 * 60) + float(durationDelta.seconds) + (float(durationDelta.microseconds) / 1000000)
+		self.logger.debug("Finished execution of task " + str(self.id) + " in " + str(duration) + " seconds with return code " + str(process.returncode))
 
+		self.logger.debug("Sending end of task execution " + str(self.id))
 		data = self.make_request("task/execution/" + str(self.id) + "/end", "PUT", {
-			"return_code": self.process.returncode,
+			"return_code": process.returncode,
 			"duration": duration,
-			"output": self.process.stdout.read()
+			"output": process.stdout.read(),
+			"error": process.stderr.read(),
 		})
 
 		if data is False or not data['id'] or data['id'] != self.id:
-			logging.error("Failed to send end of task execution " + str(self.id))
-			return False
-
-		return True
+			self.logger.error("Failed to send end of task execution " + str(self.id))
 
 
 class cronograph_daemon(cronograph_base):
@@ -316,48 +287,48 @@ class cronograph_daemon(cronograph_base):
 			log_level = logging.DEBUG
 		else:
 			log_level = logging.ERROR
-		logging.basicConfig(
-			level=log_level,
-			format = "%(asctime)s [%(levelname)-8s] (" + args.Server + ") %(message)s",
-			datefmt = "%Y-%m-%d %H:%M:%S",
-			filename = args.LogFile
-		)
+		self.logger = logging.getLogger("cronograph")
+		self.logger.setLevel(log_level)
+		logFormatter = logging.Formatter("%(asctime)s [%(levelname)-8s] (" + args.Server + ") %(message)s", "%Y-%m-%d %H:%M:%S")
+		logHandler = logging.FileHandler(args.LogFile)
+		logHandler.setFormatter(logFormatter)
+		self.logger.addHandler(logHandler)
 
 		# set offset
 		self.offset_seconds = randint(0, 59)
-		logging.debug("Call offset set to " + str(self.offset_seconds) + " seconds")
+		self.logger.debug("Call offset set to " + str(self.offset_seconds) + " seconds")
 
 		# use another api - just for development
 		if args.API:
 			self.uri = args.API
-			logging.debug('Switched API to ' + self.uri)
+			self.logger.debug('Switched API to ' + self.uri)
 
 		self.PidFile = args.PidFile
 
 		if args.Start is True and args.Stop is True:
-			logging.critical("You cannot start and stop the daemon at the same time")
+			self.logger.critical("You cannot start and stop the daemon at the same time")
 			return
 
 		# validate credentials
 		if self.validate_credentials(args.Server, args.Secret) is not True:
-			logging.critical("Invalid credentials")
+			self.logger.critical("Invalid credentials")
 			return
 
 		if args.Start is True:
-			self.start_daemon()
+			self.start_daemon(logHandler.stream)
 			return
 
 		if args.Stop is True:
 			self.stop_daemon()
 			return
 
-		logging.critical("Shall I --start or --stop the daemon?")
+		self.logger.critical("Shall I --start or --stop the daemon?")
 
-	def start_daemon(self):
+	def start_daemon(self, logHandlerStream):
 		"""Handle daemon startup and daemonization
 		"""
 
-		logging.info("Starting Cron-o-graph daemon...")
+		self.logger.info("Starting Cron-o-graph daemon...")
 
 		if os.path.exists(self.PidFile):
 			print "Daemon already running, pid file " + self.PidFile + " exists"
@@ -376,39 +347,43 @@ class cronograph_daemon(cronograph_base):
 			detach_process=True,
 			signal_map={
 				SIGTERM: self.terminate,
-			}
+			},
+			files_preserve=[
+				logHandlerStream
+			]
 		)
 
 		with self.Daemon:
-			logging.debug("Daemonizing...")
+			self.logger.debug("Daemonizing...")
 			self.loop()
 
 	def stop_daemon(self):
 		if not os.path.exists(self.PidFile):
-			logging.critical("Daemon not running or invalid pidfile")
+			self.logger.critical("Daemon not running or invalid pidfile")
 			return
 
 		pid = open(self.PidFile).read()
-		logging.info("Stopping Cron-o-graph daemon...")
+		self.logger.info("Stopping Cron-o-graph daemon...")
 		os.kill(int(pid), SIGTERM)
 
 	def loop(self):
 		while True:
 			task_list = self.make_request("ping")
 			if task_list is False:
-				logging.error("Failed to get tasks from server")
+				self.logger.error("Failed to get tasks from server")
 			elif not len(task_list):
-				logging.error("No tasks to process")
+				self.logger.error("No tasks to process")
 			else:
 				for task in task_list:
 					agent = cronograph_agent(task["id"], task["user"], task["shell"], task["command"], task["max_time"])
 					agent.set_credentials(self.server, self.secret)
 					agent.set_api_uri(self.uri)
+					agent.set_logger(self.logger)
 					agent.start()
 
 			# wait until next full minute
 			sleep_period = self.get_sleep_period()
-			logging.debug("Going to sleep for " + str(sleep_period) + " seconds")
+			self.logger.debug("Going to sleep for " + str(sleep_period) + " seconds")
 			sleep(int(sleep_period))
 
 	def get_sleep_period(self):
