@@ -200,12 +200,19 @@ class cronograph_agent(Thread, cronograph_base):
 		data = self.make_request("task/execution/" + str(self.id) + "/end", "PUT", {
 			"return_code": process.returncode,
 			"duration": duration,
-			"output": process.stdout.read(),
-			"error": process.stderr.read(),
+			"output": self.split_utf8(process.stdout.read(), 4 * 1024),
+			"error": self.split_utf8(process.stderr.read(), 4 * 1024),
 		})
 
 		if data is False or not data['id'] or data['id'] != self.id:
 			self.logger.error("Failed to send end of task execution " + str(self.id))
+
+	def split_utf8(self, string, bytes):
+		if len(string) <= bytes:
+			return string
+		while 0x80 <= ord(string[bytes]) < 0xc0:
+			bytes -= 1
+		return string[0:bytes]
 
 
 class cronograph_daemon(cronograph_base):
